@@ -73,10 +73,12 @@ def prepare():
     server.mkdir(parents=True)
     shutil.copyfile(ROOT / "app.py", server / "app.py")
     shutil.copyfile(ROOT / "bom.py", server / "bom.py")
+    shutil.copyfile(ROOT / "catalog.py", server / "catalog.py")
+    shutil.copyfile(ROOT / "catalog_parsers.py", server / "catalog_parsers.py")
     shutil.copyfile(ROOT / "fnos" / "healthcheck.py", server / "healthcheck.py")
     static = server / "static"
     static.mkdir()
-    for name in ("index.html", "app.js", "projects.js", "style.css", "favicon.svg"):
+    for name in ("index.html", "app.js", "catalog.js", "projects.js", "style.css", "favicon.svg"):
         shutil.copyfile(ROOT / "static" / name, static / name)
     # fnOS executes lifecycle scripts on Linux: always use LF and executable mode.
     for script in (stage / "cmd").iterdir():

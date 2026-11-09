@@ -20,6 +20,7 @@ from socketserver import TCPServer, ThreadingMixIn
 from urllib.parse import urlparse
 
 from bom import BomError, MAX_ROWS, check_stock, parse_bom, positive, validate_row
+from catalog import CatalogError, public_url, search_products
 
 ROOT = Path(__file__).resolve().parent
 VERSION = 2
@@ -31,6 +32,7 @@ TEXT_FIELDS = {
     "code": 64, "name": 120, "model": 160, "category": 60,
     "package": 60, "value": 120, "manufacturer": 100, "location": 100,
     "unit": 16, "supplier": 100, "datasheet_url": 1000, "notes": 2000, "lcsc": 64,
+    "image_url": 2000, "source_url": 2000,
 }
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS components (
@@ -44,6 +46,7 @@ CREATE TABLE IF NOT EXISTS components (
     unit_price REAL NOT NULL CHECK(unit_price >= 0),
     supplier TEXT NOT NULL, datasheet_url TEXT NOT NULL, notes TEXT NOT NULL,
     lcsc TEXT NOT NULL DEFAULT '',
+    image_url TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS movements (
@@ -110,6 +113,9 @@ def validate_component(data):
             raise ValidationError(f"请填写{label}")
     result["category"] = result["category"] or "未分类"
     result["unit"] = result["unit"] or "个"
+    for field, label in (("image_url", "图片"), ("source_url", "商品来源")):
+        if result[field] and not public_url(result[field]):
+            raise ValidationError(f"{label}链接必须是不含账号密码的完整 HTTPS 地址")
     link = result["datasheet_url"]
     if link and (urlparse(link).scheme not in ("http", "https") or not urlparse(link).netloc):
         raise ValidationError("数据手册链接必须是完整的 http 或 https 地址")
@@ -132,8 +138,10 @@ class Inventory:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript(SCHEMA)
-            if "lcsc" not in {row[1] for row in db.execute("PRAGMA table_info(components)")}:
-                db.execute("ALTER TABLE components ADD COLUMN lcsc TEXT NOT NULL DEFAULT ''")
+            existing_columns = {row[1] for row in db.execute("PRAGMA table_info(components)")}
+            for column in ("lcsc", "image_url", "source_url"):
+                if column not in existing_columns:
+                    db.execute(f"ALTER TABLE components ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
             db.execute("PRAGMA journal_mode=WAL")
 
     @contextmanager
@@ -184,6 +192,11 @@ class Inventory:
             existing = db.execute("SELECT * FROM components WHERE id=?", (item_id,)).fetchone()
             if not existing:
                 raise LookupError("物料不存在或已删除")
+            # Older clients do not send the optional media fields. An explicit
+            # empty value still lets the current editor remove a link.
+            for field in ("image_url", "source_url"):
+                if field not in data:
+                    item[field] = existing[field]
             if "quantity" in data and integer(data["quantity"], "库存") != existing["quantity"]:
                 raise ValidationError("请通过出入库或盘点操作修改库存")
             item["code"] = item["code"] or existing["code"]
@@ -519,7 +532,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'")
         if filename:
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.end_headers()
@@ -638,14 +651,14 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/export.csv":
             output = io.StringIO(newline="")
             writer = csv.writer(output)
-            columns = {"code": "物料编号", "name": "名称", "model": "型号", "lcsc": "立创编号", "category": "分类", "package": "封装", "value": "参数", "manufacturer": "制造商", "location": "存放位置", "quantity": "库存数量", "unit": "单位", "minimum_stock": "安全库存", "unit_price": "参考单价", "supplier": "供应商", "datasheet_url": "数据手册", "notes": "备注"}
+            columns = {"code": "物料编号", "name": "名称", "model": "型号", "lcsc": "立创编号", "category": "分类", "package": "封装", "value": "参数", "manufacturer": "制造商", "location": "存放位置", "quantity": "库存数量", "unit": "单位", "minimum_stock": "安全库存", "unit_price": "参考单价", "supplier": "供应商", "datasheet_url": "数据手册", "image_url": "图片链接", "source_url": "商品来源", "notes": "备注"}
             writer.writerow(columns.values())
             for item in self.server.inventory.snapshot()["components"]:
                 # Prevent spreadsheet formula interpretation of user-entered strings.
                 writer.writerow([("'" + v if isinstance(v, str) and v.lstrip().startswith(("=", "+", "-", "@")) else v) for v in (item[k] for k in columns)])
             self.send(200, b"\xef\xbb\xbf" + output.getvalue().encode("utf-8"), "text/csv; charset=utf-8", "inventory.csv")
         else:
-            assets = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/projects.js": ("projects.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8"), "/favicon.svg": ("favicon.svg", "image/svg+xml")}
+            assets = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/catalog.js": ("catalog.js", "text/javascript; charset=utf-8"), "/projects.js": ("projects.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8"), "/favicon.svg": ("favicon.svg", "image/svg+xml")}
             if path not in assets:
                 self.send(404, {"error": "地址不存在"})
                 return
@@ -665,6 +678,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path = route.strip("/").split("/")
             inventory = self.server.inventory
+            if self.command == "POST" and path == ["api", "catalog", "search"]:
+                data = self.body()
+                try:
+                    result = search_products(data.get("keyword"), data.get("source", "auto"))
+                except ValueError as error:
+                    raise ValidationError(str(error)) from None
+                self.send(200, result)
+                return
             if self.command == "POST" and path == ["api", "components"]:
                 result = inventory.create(self.body())
                 self.send(201, result)
@@ -706,6 +727,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(200, inventory.stock(item_id, self.body()))
                     return
             self.send(404, {"error": "接口不存在"})
+        except CatalogError as error:
+            self.send(502, {"error": str(error)})
         except (ValidationError, BomError) as error:
             self.send(400, {"error": str(error)})
         except LookupError as error:

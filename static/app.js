@@ -18,6 +18,86 @@ let confirmTask = null;
 let toastTimer;
 let loadRequest = 0;
 
+function httpsUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password ? url.href : "";
+  } catch { return ""; }
+}
+
+function componentImage(url, label, size = "") {
+  const source = httpsUrl(url);
+  if (!source) return `<span class="component-image ${size}">${icon("box")}</span>`;
+  return `<button type="button" class="component-image ${size}" data-image-preview="${e(source)}" data-image-label="${e(label)}" aria-label="查看${e(label)}大图" aria-haspopup="dialog" aria-controls="image-dialog" title="点击查看大图">${icon("box")}<img src="${e(source)}" alt="${e(label)}" loading="lazy" referrerpolicy="no-referrer"></button>`;
+}
+
+// Use an event listener instead of inline handlers so the page keeps its CSP.
+document.addEventListener("error", (event) => {
+  if (event.target instanceof HTMLImageElement && event.target.closest(".component-image")) {
+    const thumbnail = event.target.closest(".component-image");
+    thumbnail.disabled = true;
+    thumbnail.removeAttribute("data-image-preview");
+    thumbnail.title = "图片暂时无法加载";
+    event.target.remove();
+  }
+}, true);
+
+function openImagePreview(source, label) {
+  source = httpsUrl(source);
+  if (!source) return;
+  const dialog = $("image-dialog");
+  $("image-title").textContent = label || "元器件图片";
+  $("image-full").alt = label || "元器件图片";
+  $("image-full").hidden = true;
+  $("image-status").textContent = "正在加载图片…";
+  $("image-status").hidden = false;
+  $("image-original").href = source;
+  if (!dialog.open) dialog.showModal();
+  $("image-full").src = source;
+}
+
+$("image-full").addEventListener("load", () => {
+  if (!$("image-dialog").open) return;
+  $("image-full").hidden = false;
+  $("image-status").hidden = true;
+});
+$("image-full").addEventListener("error", () => {
+  if (!$("image-dialog").open) return;
+  $("image-full").hidden = true;
+  $("image-status").textContent = "图片暂时无法加载，可尝试打开原图。";
+  $("image-status").hidden = false;
+});
+$("image-dialog").addEventListener("close", () => {
+  if ($("image-dialog").open) return;
+  $("image-full").removeAttribute("src");
+  $("image-full").hidden = true;
+  $("image-original").removeAttribute("href");
+});
+// Keep Escape scoped to this preview when it sits above another dialog.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !$("image-dialog").open) return;
+  event.preventDefault();
+  event.stopPropagation();
+  $("image-dialog").close();
+}, true);
+let imageBackdropPressed = false;
+function outsideImageDialog(event) {
+  const rect = $("image-dialog").getBoundingClientRect();
+  return event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
+}
+$("image-dialog").addEventListener("pointerdown", (event) => {
+  imageBackdropPressed = event.target === $("image-dialog") && outsideImageDialog(event);
+});
+$("image-dialog").addEventListener("click", (event) => {
+  if (imageBackdropPressed && event.target === $("image-dialog") && outsideImageDialog(event)) $("image-dialog").close();
+  imageBackdropPressed = false;
+});
+
+function updateComponentImage() {
+  const form = $("component-form");
+  $("component-image-preview").innerHTML = componentImage(form.elements.image_url.value, "元器件图片", "large");
+}
+
 function toast(message, error = false) {
   $("toast").textContent = message;
   $("toast").className = error ? "error" : "";
@@ -158,7 +238,7 @@ function renderInventory() {
   $("inventory-rows").innerHTML = items.slice(start, start + size).map((item) => {
     const level = status(item);
     const stockClass = level === "healthy" ? "" : level;
-    return `<tr><td><button class="item-name" data-action="detail" data-id="${item.id}">${e(item.name)}</button><div class="model-line">${e(item.model)}</div></td><td><span class="category-badge">${e(item.category)}</span><span class="cell-secondary">${e(item.package || "未设置封装")}</span></td><td>${e(item.value || "—")}</td><td><span class="stock-value ${stockClass}"><span class="stock-indicator ${stockClass}"></span>${number(item.quantity)}<small>${e(item.unit)}</small></span><span class="cell-secondary">安全库存 ${number(item.minimum_stock)}${needsStock(item) ? " · 待补货" : ""}</span></td><td class="location-cell">${e(item.location || "未设置")}</td><td><div class="row-actions"><button class="action-mini" data-action="in" data-id="${item.id}" aria-label="${e(item.name)}入库">入库</button><button class="action-mini out" data-action="out" data-id="${item.id}" aria-label="${e(item.name)}出库">出库</button><button class="icon-button" data-action="edit" data-id="${item.id}" title="编辑物料" aria-label="编辑${e(item.name)}">${icon("edit")}</button></div></td></tr>`;
+    return `<tr><td><div class="inventory-component">${componentImage(item.image_url, item.model, "small")}<div><button class="item-name" data-action="detail" data-id="${item.id}">${e(item.name)}</button><div class="model-line">${e(item.model)}</div></div></div></td><td><span class="category-badge">${e(item.category)}</span><span class="cell-secondary">${e(item.package || "未设置封装")}</span></td><td>${e(item.value || "—")}</td><td><span class="stock-value ${stockClass}"><span class="stock-indicator ${stockClass}"></span>${number(item.quantity)}<small>${e(item.unit)}</small></span><span class="cell-secondary">安全库存 ${number(item.minimum_stock)}${needsStock(item) ? " · 待补货" : ""}</span></td><td class="location-cell">${e(item.location || "未设置")}</td><td><div class="row-actions"><button class="action-mini" data-action="in" data-id="${item.id}" aria-label="${e(item.name)}入库">入库</button><button class="action-mini out" data-action="out" data-id="${item.id}" aria-label="${e(item.name)}出库">出库</button><button class="icon-button" data-action="edit" data-id="${item.id}" title="编辑物料" aria-label="编辑${e(item.name)}">${icon("edit")}</button></div></td></tr>`;
   }).join("");
   $("inventory-empty").hidden = items.length > 0;
   if (!items.length) {
@@ -218,6 +298,7 @@ function openComponent(item = null) {
   $("initial-quantity-field").hidden = Boolean(item);
   form.elements.quantity.disabled = Boolean(item);
   $("edit-quantity-hint").hidden = !item;
+  updateComponentImage();
   $("component-dialog").showModal();
   form.elements.namedItem("name").focus();
 }
@@ -254,7 +335,7 @@ function openDetail(item) {
   $("detail-title").textContent = item.name;
   const fields = [["物料编号", item.code], ["分类 / 封装", `${item.category} / ${item.package || "未设置"}`], ["规格参数", item.value || "—"], ["制造商", item.manufacturer || "—"], ["存放位置", item.location || "未设置"], ["安全库存", `${number(item.minimum_stock)} ${item.unit}`], ["参考单价", unitPrice(item.unit_price)], ["立创编号", item.lcsc || "—"], ["供应商", item.supplier || "—"], ["创建时间", date(item.created_at)], ["更新时间", date(item.updated_at)]];
   const recent = state.movements.filter((r) => r.component_id === item.id).slice(0, 5);
-  $("detail-body").innerHTML = `<div class="detail-top"><strong>${e(item.model)}</strong><span class="stock-value ${needsStock(item) ? "low" : ""}">${number(item.quantity)}<small>${e(item.unit)}</small></span></div><dl class="detail-grid">${fields.map(([label, value]) => `<div><dt>${label}</dt><dd>${e(value)}</dd></div>`).join("")}<div class="full"><dt>数据手册</dt><dd>${item.datasheet_url ? `<a href="${e(item.datasheet_url)}" target="_blank" rel="noopener noreferrer">打开数据手册 ↗</a>` : "—"}</dd></div><div class="full"><dt>备注</dt><dd>${e(item.notes || "—")}</dd></div></dl><div class="form-section-label">最近 5 条库存流水</div>${recent.length ? recent.map((r) => `<div class="detail-record"><span class="kind-badge ${r.kind}">${kindNames[r.kind]}</span><strong class="${r.delta > 0 ? "positive" : "negative"}">${r.delta > 0 ? "+" : ""}${number(r.delta)} ${e(r.unit)}</strong><span>${number(r.before_quantity)} → ${number(r.after_quantity)}</span><span class="subtle">${e(date(r.created_at))}</span></div>`).join("") : '<p class="subtle">暂无库存流水</p>'}`;
+  $("detail-body").innerHTML = `<div class="detail-top">${componentImage(item.image_url, item.model, "large")}<strong>${e(item.model)}</strong><span class="stock-value ${needsStock(item) ? "low" : ""}">${number(item.quantity)}<small>${e(item.unit)}</small></span></div><dl class="detail-grid">${fields.map(([label, value]) => `<div><dt>${label}</dt><dd>${e(value)}</dd></div>`).join("")}<div class="full"><dt>数据手册</dt><dd>${item.datasheet_url ? `<a href="${e(item.datasheet_url)}" target="_blank" rel="noopener noreferrer">打开数据手册 ↗</a>` : "—"}</dd></div><div class="full"><dt>商品来源</dt><dd>${httpsUrl(item.source_url) ? `<a href="${e(httpsUrl(item.source_url))}" target="_blank" rel="noopener noreferrer">查看原商品 ↗</a>` : "—"}</dd></div><div class="full"><dt>备注</dt><dd>${e(item.notes || "—")}</dd></div></dl><div class="form-section-label">最近 5 条库存流水</div>${recent.length ? recent.map((r) => `<div class="detail-record"><span class="kind-badge ${r.kind}">${kindNames[r.kind]}</span><strong class="${r.delta > 0 ? "positive" : "negative"}">${r.delta > 0 ? "+" : ""}${number(r.delta)} ${e(r.unit)}</strong><span>${number(r.before_quantity)} → ${number(r.after_quantity)}</span><span class="subtle">${e(date(r.created_at))}</span></div>`).join("") : '<p class="subtle">暂无库存流水</p>'}`;
   $("detail-actions").innerHTML = `<button class="delete-button" data-action="delete" data-id="${item.id}">删除物料</button><button class="button secondary" data-action="adjust" data-id="${item.id}">盘点</button><button class="button secondary" data-action="edit" data-id="${item.id}">编辑</button><button class="button primary" data-action="in" data-id="${item.id}">入库</button><button class="button secondary" data-action="out" data-id="${item.id}">出库</button>`;
   $("detail-dialog").showModal();
 }
@@ -299,6 +380,11 @@ async function download(path, filename) {
 }
 
 document.addEventListener("click", async (event) => {
+  const preview = event.target.closest("[data-image-preview]");
+  if (preview && !preview.disabled) {
+    openImagePreview(preview.dataset.imagePreview, preview.dataset.imageLabel);
+    return;
+  }
   const close = event.target.closest("[data-close]");
   if (close) { $(close.dataset.close).close(); return; }
   const nav = event.target.closest("[data-view]");

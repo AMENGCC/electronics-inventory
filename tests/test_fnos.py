@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from app import GATEWAY_PREFIX, GatewayServer, Inventory
@@ -47,7 +48,7 @@ class GatewayTest(unittest.TestCase):
                              ("/api/export.json", "GET"), ("/api/import/preview", "POST"), ("/api/import", "POST"),
                              ("/api/projects", "GET"), ("/api/projects", "POST"), ("/api/projects/1", "PUT"),
                              ("/api/projects/1/bom", "POST"), ("/api/projects/1/bom/preview", "POST"), ("/api/projects/1/shortages.csv", "GET"),
-                             ("/api/restore", "POST"), ("/api/components/1", "DELETE")):
+                             ("/api/catalog/search", "POST"), ("/api/restore", "POST"), ("/api/components/1", "DELETE")):
             with self.subTest(path=path, method=method):
                 full_path = GATEWAY_PREFIX + path
                 self.assertEqual(self.request(full_path, method=method, authenticated=False)[0], 401)
@@ -137,6 +138,28 @@ class GatewayTest(unittest.TestCase):
         self.assertIn("--socket", result.stderr)
         self.assertIn("--db", result.stderr)
         self.assertFalse((Path(self.temp.name) / "data").exists())
+
+    def test_catalog_search_is_authenticated_read_only_and_handles_upstream_failure(self):
+        from catalog import CatalogError
+        path = GATEWAY_PREFIX + "/api/catalog/search"
+        result = {"source": "立创商城 · 立创 EDA", "products": [], "limit": 12}
+        with patch("app.search_products", return_value=result) as search:
+            status, content, _ = self.request(path, {"keyword": "STM32F103"}, "POST")
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(content), result)
+            search.assert_called_once_with("STM32F103", "auto")
+        with patch("app.search_products", return_value=result) as search:
+            self.assertEqual(self.request(path, {"keyword": "STM32F103", "source": "hqchip"}, "POST")[0], 200)
+            search.assert_called_once_with("STM32F103", "hqchip")
+        self.assertEqual(self.request(path, {"keyword": "STM32F103", "source": "unknown"}, "POST")[0], 400)
+        with patch("app.search_products", side_effect=CatalogError("连接失败")):
+            self.assertEqual(self.request(path, {"keyword": "C25804"}, "POST")[0], 502)
+        self.assertEqual(self.request(path, {"keyword": "x"}, "POST")[0], 400)
+        self.assertEqual(self.inventory.snapshot(), {"components": [], "movements": []})
+        status, _, headers = self.request(GATEWAY_PREFIX + "/")
+        self.assertEqual(status, 200)
+        self.assertIn("img-src 'self' data: https:", headers["Content-Security-Policy"])
+        self.assertEqual(self.request(GATEWAY_PREFIX + "/catalog.js")[0], 200)
 
 
 @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "Unix sockets require Linux/fnOS on this Python build")
