@@ -1,0 +1,97 @@
+#!/bin/bash
+# fnOS runs this script as the package user. No root operations are required.
+set -u
+umask 022
+
+fail() {
+    printf '%s\n' "$1" >&2
+    if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+        printf '%s\n' "$1" > "$TRIM_TEMP_LOGFILE"
+    fi
+    exit 1
+}
+
+[ -n "${TRIM_APPDEST:-}" ] || fail "Missing fnOS application directory."
+[ -n "${TRIM_PKGVAR:-}" ] || fail "Missing fnOS data directory."
+APP="${TRIM_APPDEST}/server/app.py"
+PYTHON="/var/apps/python312/target/bin/python3"
+SOCKET="${TRIM_APPDEST}/app.sock"
+PREFIX="/app/electronics-inventory"
+PID_FILE="${TRIM_PKGVAR}/app.pid"
+LOG_FILE="${TRIM_PKGVAR}/app.log"
+mkdir -p "$TRIM_PKGVAR" || fail "Cannot create application data directory."
+
+# Serialize app-center operations. The background service must not inherit fd 9.
+exec 9>"${TRIM_PKGVAR}/control.lock"
+flock -w 30 9 || fail "Another application operation is in progress."
+
+PID=""
+is_running() {
+    [ -f "$PID_FILE" ] || return 1
+    IFS= read -r PID < "$PID_FILE" || return 1
+    case "$PID" in ''|*[!0-9]*|0|1) return 1 ;; esac
+    kill -0 "$PID" 2>/dev/null || return 1
+    # Never signal another process if a stale PID has been reused.
+    [ -r "/proc/$PID/cmdline" ] || return 1
+    tr '\0' '\n' < "/proc/$PID/cmdline" | grep -Fx -- "$APP" > /dev/null
+}
+
+stop_app() {
+    if is_running; then
+        kill -TERM "$PID" 2>/dev/null || return 1
+        for ((attempt=0; attempt<80; attempt++)); do
+            is_running || break
+            sleep 0.25
+        done
+        if is_running; then
+            kill -KILL "$PID" 2>/dev/null || return 1
+            sleep 0.25
+            is_running && return 1
+        fi
+    fi
+    rm -f "$PID_FILE"
+    if [ -S "$SOCKET" ]; then rm -f "$SOCKET"; fi
+}
+
+case "${1:-}" in
+    start)
+        if is_running; then exit 0; fi
+        [ -x "$PYTHON" ] || fail "Python 3.12 runtime is missing. Install python312 in App Center."
+        [ -f "$APP" ] || fail "Application files are missing. Please reinstall the package."
+        if [ -e "$SOCKET" ] && [ ! -S "$SOCKET" ]; then
+            fail "The application socket path is occupied by a regular file."
+        fi
+        rm -f "$PID_FILE"
+        if [ -S "$SOCKET" ]; then rm -f "$SOCKET"; fi
+        # Rotate the previous log at startup if it exceeds 5 MiB.
+        if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE")" -gt 5242880 ]; then
+            mv -f "$LOG_FILE" "${LOG_FILE}.1"
+        fi
+        printf '\nStarting electronics-inventory at %s\n' "$(date -Iseconds)" >> "$LOG_FILE"
+        nohup "$PYTHON" -u "$APP" --socket "$SOCKET" \
+            --gateway-prefix "$PREFIX" --db "${TRIM_PKGVAR}/inventory.db" \
+            >> "$LOG_FILE" 2>&1 9>&- &
+        STARTED_PID="$!"
+        printf '%s\n' "$STARTED_PID" > "$PID_FILE"
+        for ((attempt=0; attempt<30; attempt++)); do
+            # The new child may still be exec'ing nohup/Python on the first poll.
+            if is_running && [ -S "$SOCKET" ] && "$PYTHON" "${TRIM_APPDEST}/server/healthcheck.py" "$SOCKET" "$PREFIX"; then
+                exit 0
+            fi
+            kill -0 "$STARTED_PID" 2>/dev/null || break
+            sleep 0.25
+        done
+        stop_app || true
+        fail "Application startup failed. Check the app.log file in the application data directory."
+        ;;
+    stop)
+        stop_app || fail "Could not stop the application process."
+        ;;
+    status)
+        if is_running; then exit 0; fi
+        exit 3
+        ;;
+    *)
+        fail "Usage: main {start|stop|status}"
+        ;;
+esac

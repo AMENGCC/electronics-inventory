@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# Local / runtime data
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Build & packaging
+.build/
+dist/
+.tools/
+
+# Preview / browser automation
+.preview/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*~

@@ -1,0 +1,3 @@
+#!/bin/bash
+# Application data is managed separately in TRIM_PKGVAR.
+exit 0
